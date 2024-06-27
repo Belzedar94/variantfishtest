@@ -3,6 +3,7 @@ import os
 import random
 import warnings
 import argparse
+from collections import defaultdict
 
 import stat_util
 import chess.uci
@@ -17,18 +18,18 @@ SCORES = [1, 0, 0.5]
 def elo_stats(scores):
     try:
         elo, elo95, los = stat_util.get_elo(scores)
-        return "ELO: %.2f +-%.1f (95%%) LOS: %.1f%%\n" % (elo, elo95, 100 * los)
+        return f"ELO: {elo:.2f} +-{elo95:.1f} (95%) LOS: {los*100:.1f}%\n"
     except (ValueError, ZeroDivisionError):
         return "\n"
 
 
 def sprt_stats(scores, elo1, elo2):
     s = stat_util.SPRT({'wins': scores[0], 'losses': scores[1], 'draws': scores[2]}, elo1, 0.05, elo2, 0.05, 200)
-    return "LLR: %.2f (%.2f,%.2f) [%.2f,%.2f]\n" % (s['llr'], s['lower_bound'], s['upper_bound'], elo1, elo2)
+    return f"LLR: {s['llr']:.2f} ({s['lower_bound']:.2f},{s['upper_bound']:.2f}) [{elo1:.2f},{elo2:.2f}]\n"
 
 
 def print_scores(scores):
-    return "Total: %d W: %d L: %d D: %d" % (sum(scores), scores[0], scores[1], scores[2])
+    return f"Total: {sum(scores)} W: {scores[0]} L: {scores[1]} D: {scores[2]}"
 
 
 class EngineMatch:
@@ -69,6 +70,7 @@ class EngineMatch:
         self.r = []
         self.engines = []
         self.time_losses = []
+        self.game_pairs = defaultdict(lambda: [0, 0, 0])  # New: for collecting game pair statistics
 
         if self.verbosity > 2:
             logging.basicConfig()
@@ -87,9 +89,10 @@ class EngineMatch:
             self.init_book()
             pos = "fen " + random.choice(self.fens) if self.fens else "startpos"
             self.init_game()
-            self.process_game(0, 1, pos)
+            result1 = self.process_game(0, 1, pos)
             self.init_game()
-            self.process_game(1, 0, pos)
+            result2 = self.process_game(1, 0, pos)
+            self.update_game_pair_stats(pos, result1, result2)  # New: update game pair statistics
         self.print_results()
         self.close()
 
@@ -197,20 +200,27 @@ class EngineMatch:
         res = self.play_game(white, black, pos)
         if self.verbosity > 1:
             self.out.write(
-                "Game %d (%s):\n" % (sum(self.scores) + 1, self.variant) + pos + "\n" + " ".join(self.bestmoves) + "\n")
+                f"Game {sum(self.scores) + 1} ({self.variant}):\n{pos}\n{' '.join(self.bestmoves)}\n")
         self.r.append(SCORES[res] if white == 0 else 1 - SCORES[res])
         if white == 0 or res == DRAW:
             self.scores[res] += 1
         else:
-            self.scores[1 - res] += 1
-        if self.verbosity > 1:
+            self.s        if self.verbosity > 1:
             self.print_results()
         elif self.verbosity > 0:
             self.print_stats()
+        return res
+
+    def update_game_pair_stats(self, pos, result1, result2):
+        """Update game pair statisti        if result1 == WIN and result2 == LOSS:
+            self.game_pairs[pos][0] += 1
+        elif result1 == LOSS and result2 == WIN:
+            self.game_pairs[pos][1] += 1
+        else:
+            self.game_pairs[pos][2] += 1
 
     def print_stats(self):
-        """Print intermediate results."""
-        self.out.write(print_scores(self.scores) + " ")
+        """P        self.out.write(print_scores(self.scores) + " ")
         if self.sprt:
             self.out.write(sprt_stats(self.scores, self.elo0, self.elo1))
         else:
@@ -218,38 +228,40 @@ class EngineMatch:
 
     def print_settings(self):
         """Print settings for test."""
-        self.out.write("engine1:    %s\n" % self.engine_paths[0])
-        self.out.write("engine2:    %s\n" % self.engine_paths[1])
-        self.out.write("e1-options: %s\n" % self.engine_options[0])
-        self.out.write("e2-options: %s\n" % self.engine_options[1])
-        self.out.write("variants:   %s\n" % self.variants)
-        self.out.write("config:     %s\n" % self.config)
-        self.out.write("# of games: %d\n" % self.max_games)
-        self.out.write("sprt:       %s\n" % self.sprt)
+        self.out.write(f"engine1:    {self.engine_paths[0]}\n")
+        self.out.write(f"engine2:    {self.engine_paths[1]}\n")
+        self.out.write(f"e1-options: {self.engine_options[0]}\n")
+        self.out.write(f"e2-options:        self.out.write(f"variants:   {self.variants}\n")
+        self.out.write(f"config:     {self.config}\n")
+        self.out.write(f"# of games: {self.max_games}\n")
+        self.out.write(f"sprt:       {self.sprt}\n")
         if self.sprt:
-            self.out.write("elo0:       %.2f\n" % self.elo0)
-            self.out.write("elo1:       %.2f\n" % self.elo1)
-        self.out.write("time:       %d\n" % self.time)
-        self.out.write("increment:  %d\n" % self.inc)
-        self.out.write("book:       %s\n" % self.book)
+            self.out.write(f"elo0:       {self.elo0:.2f}\n")
+            self.out.write(f"elo1:       {self.elo1:.2f}\n")
+        self.out.write(f"time:       {self.time}\n")
+        self.out.write(f"increment:  {self        self.out.write(f"book:       {self.book}\n")
         self.out.write("------------------------\n")
 
     def print_results(self):
         """Print final test result."""
-        drawrate = float(self.scores[2]) / sum(self.scores)
-        # print(self.r)
-        self.out.write("------------------------\n")
+        drawrate = float(self.scores[2]) / sum(self.scores        self.out.write("------------------------\n")
         self.out.write("Stats:\n")
-        self.out.write("draw rate: %.2f\n" % (drawrate))
-        self.out.write("time losses engine1: %d\n" % (self.time_losses[0]))
-        self.out.write("time losses engine2: %d\n" % (self.time_losses[1]))
+        self.out.write(f"draw rate: {drawrate:.2f}%\n")  # Changed to percentage
+        self.out.write(f"time losses engine1: {self.time_losses[0]}\n")
         self.out.write("\n")
         if self.sprt:
             self.out.write(sprt_stats(self.scores, self.elo0, self.elo1))
         else:
-            self.out.write(elo_stats(self.scores))
-        self.out.write(print_scores(self.scores) + "\n")
-
+            self.out.write(elo_stats        self.out.write(print_scores(self.scores) + "\n")
+        
+        # New: Print game pair statistics
+        self.out.write("\nGame Pair Statistics:\n")
+        for pos, stats in self.game_pairs.items():
+            self.out.write(f"Position: {pos}\n")
+            self.out.write(f"  Engine1 wins both: {stats[0]}\n")
+            self.out.write(f"  Engine2 wins both: {stats[1]}\n")
+            self.out.write(f"  Split result:      {stats[2]}\n")
+        self.out.write(
 
 if __name__ == "__main__":
     match = EngineMatch()
